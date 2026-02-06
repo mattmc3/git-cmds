@@ -1,9 +1,33 @@
 #!/usr/bin/env bash
 
 ##? cloner: A better git cloner.
-# - Support short user/repo form
-# - Default clone to ~/repos (configurable), not $PWD unless dir arg provided
-# - Add flags I always forget but 99% of the time want (--recurse-submodules)
+#
+# Usage:
+#   git cloner [--profile=<name>] [-d|--debug] [<git-clone-flags>] <repo> [<dest>]
+#
+# Features:
+#   - Support short user/repo form
+#   - Default clone to ~/repos (configurable), not $PWD unless dir arg provided
+#   - Profile support for multiple git identities (work, personal, etc.)
+#   - SSH key and template support via git config
+#
+# Git config:
+#   [cloner]
+#       repoRoot = ~/repos
+#       gitOwner = myuser
+#       gitDomain = github.com
+#       gitProtocol = https
+#       cloneAddFlags = --recurse-submodules
+#       sshKey = ~/.ssh/id_ed25519
+#       template = ~/.config/git/templates/default
+#
+#   # Profile overrides (git cloner --profile=work)
+#   [cloner "work"]
+#       gitOwner = workorg
+#       ownerAlias = work
+#       gitProtocol = ssh
+#       sshKey = ~/.ssh/github_work
+#       template = ~/.config/git/templates/work
 
 say() { printf '%s\n' "$@"; }
 warn() { say "$@" >&2; }
@@ -23,18 +47,28 @@ cfg() {
 to_short_repo() {
   [[ $# -eq 1 ]] || return 1
   local default_user
-  default_user="$(cfg gitUser || git config user.name || whoami)"
+  default_user="$(cfg gitOwner || git config user.name || whoami)"
   # Prepend default git user to always make 2+ fields and print user/repo form
   say "${default_user}/${1}" | awk -F '[/:]' '{ print $(NF-1) "/" $NF }'
 }
 
 # Take a repo and determine its clone destination.
+# Path is always: repoRoot / owner / repo
+# ownerAlias overrides the owner directory name when it matches gitOwner.
 to_repo_dir() {
   [[ $# -eq 1 ]] || return 1
-  local dir
-  dir="$(cfg repoPath || say "$HOME/repos")"
+  local dir short_repo owner repo_name alias git_owner
+  short_repo="$(to_short_repo "$1")"
+  owner="${short_repo%/*}"
+  repo_name="${short_repo##*/}"
+  dir="$(cfg repoRoot || say "$HOME/repos")"
   dir="${dir/#\~/$HOME}"
-  say "${dir}/$(to_short_repo "$1")"
+  alias="$(cfg ownerAlias)"
+  git_owner="$(cfg gitOwner)"
+  if [[ -n "$alias" && "$owner" == "$git_owner" ]]; then
+    owner="$alias"
+  fi
+  say "${dir}/${owner}/${repo_name}"
 }
 
 # Take a repo and determine its URL.
@@ -48,8 +82,8 @@ to_repo_url() {
   repo="$(to_short_repo "$1")"
 
   case $gitprotocol in
-    ssh*|git*)
-      say "${gitprotocol}@${gitdomain}:${repo}.git"
+    ssh|git)
+      say "git@${gitdomain}:${repo}.git"
       ;;
     *)
       say "${gitprotocol}://${gitdomain}/${repo}"
@@ -58,15 +92,16 @@ to_repo_url() {
 }
 
 cloner() {
-  local profile dir repo repo_arg debug
-  local ssh_key template clone_log
+  local profile dir repo repo_arg debug=false
+  local ssh_key template
 
-  # Parse --profile flag.
+  # Parse cloner flags.
   local -a args=()
   while [[ $# -gt 0 ]]; do
     case $1 in
       --profile=*) profile="${1#--profile=}" ;;
       --profile)   profile="$2"; shift ;;
+      -d|--debug)  debug=true ;;
       *)           args+=("$1") ;;
     esac
     shift
@@ -91,11 +126,16 @@ cloner() {
   [[ -z "$dir" ]] && dir="$(to_repo_dir "$repo_arg")"
   repo="$(to_repo_url "$repo_arg")"
 
+  # Already cloned? Output dir and exit 150.
+  if [[ -d "$dir" ]]; then
+    say "$dir"
+    exit 150
+  fi
+
   # Read profile config.
   ssh_key="$(cfg sshKey)";       ssh_key="${ssh_key/#\~/$HOME}"
   template="$(cfg template)";    template="${template/#\~/$HOME}"
-  clone_log="$(cfg cloneLog)";   clone_log="${clone_log/#\~/$HOME}"
-  debug="$(cfg debug)"
+
 
   # Build clone command.
   local -a clone_cmd=(command git clone)
@@ -105,26 +145,24 @@ cloner() {
   [[ -n "$template" ]] && clone_cmd+=("--template=$template")
   clone_cmd+=("$@" "$repo" "$dir")
 
-  if [[ "${debug,,}" == @(t|true|1) ]]; then
-    say "clone command modified to:"
-    say "  ${clone_cmd[*]}"
-  fi
-
   # Clone, with SSH key if configured.
   if [[ -n "$ssh_key" ]]; then
-    GIT_SSH_COMMAND="ssh -i $ssh_key -o IdentitiesOnly=yes" \
-      "${clone_cmd[@]}"
+    local ssh_cmd="ssh -i $ssh_key -o IdentitiesOnly=yes"
+    if [[ "$debug" == true ]]; then
+      warn "GIT_SSH_COMMAND=\"$ssh_cmd\" ${clone_cmd[*]}"
+    fi
+    GIT_SSH_COMMAND="$ssh_cmd" "${clone_cmd[@]}"
   else
+    if [[ "$debug" == true ]]; then
+      warn "${clone_cmd[*]}"
+    fi
     "${clone_cmd[@]}"
   fi
 
   # Post-clone setup.
   if [[ -d "$dir" ]]; then
     [[ -n "$ssh_key" ]] && git -C "$dir" config core.sshCommand "ssh -i $ssh_key"
-    if [[ -n "$clone_log" ]]; then
-      mkdir -p "$(dirname "$clone_log")"
-      say "$dir" >> "$clone_log"
-    fi
+    say "$dir"
   fi
 }
 cloner "$@"
