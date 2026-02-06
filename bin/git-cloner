@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+
+##? cloner: A better git cloner.
+# - Support short user/repo form
+# - Default clone to ~/repos (configurable), not $PWD unless dir arg provided
+# - Add flags I always forget but 99% of the time want (--recurse-submodules)
+
+say() { printf '%s\n' "$@"; }
+warn() { say "$@" >&2; }
+die() { warn "$@"; exit "${ERR:-1}"; }
+
+# Profile-aware git config lookup.
+# Falls back from cloner.<profile>.<key> to cloner.<key>.
+cfg() {
+  if [[ -n "$profile" ]]; then
+    git config "cloner.${profile}.${1}" 2>/dev/null || git config "cloner.${1}" 2>/dev/null
+  else
+    git config "cloner.${1}" 2>/dev/null
+  fi
+}
+
+# Take a repo and make it into the short user/repo form.
+to_short_repo() {
+  [[ $# -eq 1 ]] || return 1
+  local default_user
+  default_user="$(cfg gitUser || git config user.name || whoami)"
+  # Prepend default git user to always make 2+ fields and print user/repo form
+  say "${default_user}/${1}" | awk -F '[/:]' '{ print $(NF-1) "/" $NF }'
+}
+
+# Take a repo and determine its clone destination.
+to_repo_dir() {
+  [[ $# -eq 1 ]] || return 1
+  local dir
+  dir="$(cfg repoPath || say "$HOME/repos")"
+  dir="${dir/#\~/$HOME}"
+  say "${dir}/$(to_short_repo "$1")"
+}
+
+# Take a repo and determine its URL.
+to_repo_url() {
+  [[ $# -eq 1 ]] || return 1
+  case $1 in https://*|git@*) say "$1"; return ;; esac
+
+  local gitdomain gitprotocol repo
+  gitdomain="$(cfg gitDomain || say 'github.com')"
+  gitprotocol="$(cfg gitProtocol || say 'https')"
+  repo="$(to_short_repo "$1")"
+
+  case $gitprotocol in
+    ssh*|git*)
+      say "${gitprotocol}@${gitdomain}:${repo}.git"
+      ;;
+    *)
+      say "${gitprotocol}://${gitdomain}/${repo}"
+      ;;
+  esac
+}
+
+cloner() {
+  local profile dir repo repo_arg debug
+  local ssh_key template clone_log
+
+  # Parse --profile flag.
+  local -a args=()
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --profile=*) profile="${1#--profile=}" ;;
+      --profile)   profile="$2"; shift ;;
+      *)           args+=("$1") ;;
+    esac
+    shift
+  done
+  set -- "${args[@]}"
+
+  if [[ $# -eq 0 ]]; then
+    die "clone: Expecting a repo argument. See 'git clone -h'."
+  fi
+
+  # If multiple args and the last looks like a path (~ / . $), treat it as the
+  # clone destination directory.
+  if [[ $# -gt 1 && "${*: -1}" == [./~\$]* ]]; then
+    dir="${*: -1}"
+    set -- "${@:1:$#-1}"
+  fi
+
+  # Last arg is the repo; everything before it is pass-through flags.
+  repo_arg="${*: -1}"
+  set -- "${@:1:$#-1}"
+
+  [[ -z "$dir" ]] && dir="$(to_repo_dir "$repo_arg")"
+  repo="$(to_repo_url "$repo_arg")"
+
+  # Read profile config.
+  ssh_key="$(cfg sshKey)";       ssh_key="${ssh_key/#\~/$HOME}"
+  template="$(cfg template)";    template="${template/#\~/$HOME}"
+  clone_log="$(cfg cloneLog)";   clone_log="${clone_log/#\~/$HOME}"
+  debug="$(cfg debug)"
+
+  # Build clone command.
+  local -a clone_cmd=(command git clone)
+  local -a addflags
+  read -ra addflags <<< "$(cfg cloneAddFlags)"
+  [[ ${#addflags[@]} -gt 0 ]] && clone_cmd+=("${addflags[@]}")
+  [[ -n "$template" ]] && clone_cmd+=("--template=$template")
+  clone_cmd+=("$@" "$repo" "$dir")
+
+  if [[ "${debug,,}" == @(t|true|1) ]]; then
+    say "clone command modified to:"
+    say "  ${clone_cmd[*]}"
+  fi
+
+  # Clone, with SSH key if configured.
+  if [[ -n "$ssh_key" ]]; then
+    GIT_SSH_COMMAND="ssh -i $ssh_key -o IdentitiesOnly=yes" \
+      "${clone_cmd[@]}"
+  else
+    "${clone_cmd[@]}"
+  fi
+
+  # Post-clone setup.
+  if [[ -d "$dir" ]]; then
+    [[ -n "$ssh_key" ]] && git -C "$dir" config core.sshCommand "ssh -i $ssh_key"
+    if [[ -n "$clone_log" ]]; then
+      mkdir -p "$(dirname "$clone_log")"
+      say "$dir" >> "$clone_log"
+    fi
+  fi
+}
+cloner "$@"

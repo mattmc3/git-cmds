@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+##? workcloner: Clone a repo using the "work" cloner profile.
+exec git cloner --profile=work "$@"
