@@ -29,6 +29,8 @@
 #       sshKey = ~/.ssh/github_work
 #       template = ~/.config/git/templates/work
 
+VERSION="0.1.0"
+
 say() { printf '%s\n' "$@"; }
 warn() { say "$@" >&2; }
 die() { warn "$@"; exit "${ERR:-1}"; }
@@ -102,6 +104,7 @@ cloner() {
       --profile=*) profile="${1#--profile=}" ;;
       --profile)   profile="$2"; shift ;;
       -d|--debug)  debug=true ;;
+      -v|--version) say "git-cloner $VERSION"; return ;;
       *)           args+=("$1") ;;
     esac
     shift
