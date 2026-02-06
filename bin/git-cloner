@@ -29,7 +29,7 @@
 #       sshKey = ~/.ssh/github_work
 #       template = ~/.config/git/templates/work
 
-VERSION="0.1.0"
+VERSION="1.0.0"
 
 say() { printf '%s\n' "$@"; }
 warn() { say "$@" >&2; }
